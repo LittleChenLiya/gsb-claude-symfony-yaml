@@ -122,6 +122,14 @@ class Inline
 
                 return self::dumpNull($flags);
             case $value instanceof \DateTimeInterface:
+                if (Yaml::DUMP_DATETIME_STRICT & $flags) {
+                    // Explicit date scalar policy: always dump with microsecond precision
+                    // and a numeric timezone offset, so that parsing the output back with
+                    // Yaml::PARSE_DATETIME_STRICT yields the very same instant, regardless
+                    // of the machine's default timezone.
+                    return $value->format('Y-m-d\TH:i:s.uP');
+                }
+
                 return $value->format(match (true) {
                     !$length = \strlen(rtrim($value->format('u'), '0')) => 'c',
                     $length < 4 => 'Y-m-d\TH:i:s.vP',
@@ -891,7 +899,11 @@ class Inline
                         return log(0);
                     case Parser::preg_match('/^(-|\+)?[0-9][0-9_]*(\.[0-9_]+)?$/', $scalar):
                         return (float) str_replace('_', '', $scalar);
-                    case Parser::preg_match(self::getTimestampRegex(), $scalar):
+                    case Parser::preg_match(self::getTimestampRegex(), $scalar, $matches):
+                        if (Yaml::PARSE_DATETIME_STRICT & $flags) {
+                            return self::evaluateTimestampStrict($scalar, $matches);
+                        }
+
                         try {
                             // When no timezone is provided in the parsed date, YAML spec says we must assume UTC.
                             $time = new \DateTimeImmutable($scalar, new \DateTimeZone('UTC'));
@@ -921,6 +933,57 @@ class Inline
         }
 
         return (string) $scalar;
+    }
+
+    /**
+     * Evaluates a timestamp-looking scalar according to the explicit date scalar
+     * policy enabled by the Yaml::PARSE_DATETIME_STRICT flag.
+     *
+     * The policy is intentionally strict and deterministic:
+     *
+     *  - precision is limited to microseconds: more than 6 fractional second
+     *    digits are rejected instead of being silently truncated;
+     *  - impossible calendar dates (e.g. "2024-02-30") and out-of-range time or
+     *    timezone-offset components are rejected instead of being silently
+     *    normalized to a different instant;
+     *  - only scalars carrying an explicit timezone ("Z" or a numeric offset)
+     *    are converted to a \DateTimeImmutable; scalars without a timezone are
+     *    kept as their original string and are never interpreted against the
+     *    machine's default timezone.
+     *
+     * @param array $matches The named captures of the timestamp regex
+     */
+    private static function evaluateTimestampStrict(string $scalar, array $matches): \DateTimeImmutable|string
+    {
+        if (\strlen($matches['fraction'] ?? '') > 6) {
+            throw new ParseException(\sprintf('The date "%s" could not be parsed as its fractional seconds exceed the supported precision of 6 digits (microseconds).', $scalar), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
+        }
+
+        if (!checkdate((int) $matches['month'], (int) $matches['day'], (int) $matches['year'])) {
+            throw new ParseException(\sprintf('The date "%s" could not be parsed as it is not a valid calendar date.', $scalar), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
+        }
+
+        if ('' !== ($matches['hour'] ?? '') && ((int) $matches['hour'] > 23 || (int) $matches['minute'] > 59 || (int) $matches['second'] > 59)) {
+            throw new ParseException(\sprintf('The date "%s" could not be parsed as it is not a valid time of day.', $scalar), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
+        }
+
+        if ('' !== ($matches['tz_hour'] ?? '') && ((int) $matches['tz_hour'] > 23 || (int) ($matches['tz_minute'] ?? 0) > 59)) {
+            throw new ParseException(\sprintf('The date "%s" could not be parsed as its timezone offset is out of range.', $scalar), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
+        }
+
+        // No explicit timezone: keep the original string instead of guessing one;
+        // in particular, the machine's default timezone is never consulted.
+        if ('' === ($matches['tz'] ?? '')) {
+            return $scalar;
+        }
+
+        try {
+            // The scalar carries an explicit offset, so the timezone passed here is
+            // never actually used; UTC is provided to make that independence explicit.
+            return new \DateTimeImmutable($scalar, new \DateTimeZone('UTC'));
+        } catch (\Exception $e) {
+            throw new ParseException(\sprintf('The date "%s" could not be parsed as it is an invalid date.', $scalar), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename, $e);
+        }
     }
 
     private static function parseAnchor(string $value, int &$i): ?string

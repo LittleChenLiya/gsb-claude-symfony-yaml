@@ -41,6 +41,25 @@ class Yaml
     public const PARSE_EXCEPTION_ON_ALIAS = 65536;
 
     /**
+     * Enables the explicit date scalar policy when parsing:
+     * only timestamp scalars carrying an explicit timezone ("Z" or a numeric
+     * offset) are converted to \DateTimeImmutable; fractional seconds are
+     * limited to microsecond precision (6 digits); impossible calendar dates
+     * (e.g. "2024-02-30") are rejected; scalars that look like dates but have
+     * no timezone are kept as their original string and the machine's default
+     * timezone is never consulted.
+     */
+    public const PARSE_DATETIME_STRICT = 131072;
+
+    /**
+     * Dumps \DateTimeInterface instances according to the explicit date scalar
+     * policy: always with microsecond precision and a numeric timezone offset,
+     * so that parsing the output back with PARSE_DATETIME_STRICT yields the
+     * very same instant.
+     */
+    public const DUMP_DATETIME_STRICT = 262144;
+
+    /**
      * Parses a YAML file into a PHP value.
      *
      * Usage:

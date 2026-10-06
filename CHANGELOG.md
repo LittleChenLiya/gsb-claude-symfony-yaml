@@ -4,6 +4,11 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `PARSE_DATETIME_STRICT` and `DUMP_DATETIME_STRICT` flags implementing an explicit
+   date scalar policy: only timestamps with an explicit timezone and at most microsecond
+   precision are converted to `\DateTimeImmutable`, zone-less date-like scalars are kept as
+   strings (the machine's default timezone is never consulted), and invalid calendar dates
+   or excessive precision are rejected with a dedicated `ParseException`
  * Add support for the `!!null`, `!!bool` and `!!int` tags, and accept quoted values for them and for `!!float`
  * Throw a `ParseException` when the value of a `!!float` tag is not a valid float, instead of casting it to `0.0`
  * Add a `gitlab` output format to the `lint:yaml` command, producing a report in the GitLab Code Quality format
