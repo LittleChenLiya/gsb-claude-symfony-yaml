@@ -13,6 +13,7 @@ namespace Symfony\Component\Yaml;
 
 use Symfony\Component\Yaml\Exception\DumpException;
 use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Tag\BinaryScalar;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 
 /**
@@ -33,6 +34,7 @@ class Inline
     private static bool $objectSupport = false;
     private static bool $objectForMap = false;
     private static bool $constantSupport = false;
+    private static bool $binaryScalarSupport = false;
 
     public static function initialize(int $flags, ?int $parsedLineNumber = null, ?string $parsedFilename = null): void
     {
@@ -40,6 +42,7 @@ class Inline
         self::$objectSupport = (bool) (Yaml::PARSE_OBJECT & $flags);
         self::$objectForMap = (bool) (Yaml::PARSE_OBJECT_FOR_MAP & $flags);
         self::$constantSupport = (bool) (Yaml::PARSE_CONSTANT & $flags);
+        self::$binaryScalarSupport = (bool) (Yaml::PARSE_BINARY_SCALAR & $flags);
         self::$parsedFilename = $parsedFilename;
 
         if (null !== $parsedLineNumber) {
@@ -129,6 +132,8 @@ class Inline
                 });
             case $value instanceof \UnitEnum:
                 return \sprintf('!php/enum %s::%s', $value::class, $value->name);
+            case $value instanceof BinaryScalar:
+                return $value->toYaml();
             case \is_object($value):
                 if ($value instanceof TaggedValue) {
                     return '!'.$value->getTag().' '.self::dump($value->getValue(), $flags);
@@ -974,7 +979,7 @@ class Inline
         throw new ParseException(\sprintf('Tags support is not enabled. Enable the "Yaml::PARSE_CUSTOM_TAGS" flag to use "!%s".', $tag), self::$parsedLineNumber + 1, $value, self::$parsedFilename);
     }
 
-    public static function evaluateBinaryScalar(string $scalar): string
+    public static function evaluateBinaryScalar(string $scalar): string|BinaryScalar
     {
         $parsedBinaryData = preg_replace('/\s/', '', $scalar);
 
@@ -986,17 +991,13 @@ class Inline
             throw new ParseException(\sprintf('The "!!binary" tag only supports a base64 encoded string, got "%s".', get_debug_type($parsedBinaryData)), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
         }
 
-        $parsedBinaryData = (string) $parsedBinaryData;
-
-        if (0 !== (\strlen($parsedBinaryData) % 4)) {
-            throw new ParseException(\sprintf('The normalized base64 encoded data (data without whitespace characters) length must be a multiple of four (%d bytes given).', \strlen($parsedBinaryData)), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
+        try {
+            $binary = BinaryScalar::fromBase64((string) $parsedBinaryData);
+        } catch (ParseException $e) {
+            throw new ParseException($e->getMessage(), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename, $e);
         }
 
-        if (!Parser::preg_match('#^[A-Z0-9+/]+={0,2}$#i', $parsedBinaryData)) {
-            throw new ParseException(\sprintf('The base64 encoded data (%s) contains invalid characters.', $parsedBinaryData), self::$parsedLineNumber + 1, $scalar, self::$parsedFilename);
-        }
-
-        return base64_decode($parsedBinaryData, true);
+        return self::$binaryScalarSupport ? $binary : $binary->getBytes();
     }
 
     /**

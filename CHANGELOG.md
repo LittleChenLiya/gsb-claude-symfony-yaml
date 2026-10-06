@@ -4,6 +4,7 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `Tag\BinaryScalar` value object implementing an explicit `!!binary` scalar strategy (tag, raw base64 text and decoded bytes kept separate, RFC 4648 whitespace/padding handling, size limit enforced before decoding) and the `Yaml::PARSE_BINARY_SCALAR` flag to opt into it when parsing
  * Add support for the `!!null`, `!!bool` and `!!int` tags, and accept quoted values for them and for `!!float`
  * Throw a `ParseException` when the value of a `!!float` tag is not a valid float, instead of casting it to `0.0`
  * Add a `gitlab` output format to the `lint:yaml` command, producing a report in the GitLab Code Quality format
