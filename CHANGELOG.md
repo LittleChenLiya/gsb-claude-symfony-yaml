@@ -4,6 +4,11 @@ CHANGELOG
 8.2
 ---
 
+ * Add the `Yaml::PARSE_BINARY` flag to parse `!!binary` scalars as `Tag\Binary` value objects that keep the tag,
+   the raw base64 text and the decoded bytes apart; `Tag\Binary` values are dumped back as `!!binary` scalars
+ * Report the position of invalid base64 characters and misplaced or excess padding in `!!binary` scalars,
+   and reject data decoding to more than `Tag\Binary::DEFAULT_MAX_BYTES` bytes before decoding it
+ * Never evaluate custom object tags (e.g. `!php/object`) hidden in the value of a `!!binary` scalar
  * Add support for the `!!null`, `!!bool` and `!!int` tags, and accept quoted values for them and for `!!float`
  * Throw a `ParseException` when the value of a `!!float` tag is not a valid float, instead of casting it to `0.0`
  * Add a `gitlab` output format to the `lint:yaml` command, producing a report in the GitLab Code Quality format
