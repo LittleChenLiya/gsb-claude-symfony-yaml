@@ -41,6 +41,21 @@ class Yaml
     public const PARSE_EXCEPTION_ON_ALIAS = 65536;
 
     /**
+     * Convert date scalars to \DateTimeImmutable only when they exactly match
+     * the schema declared by DateScalarPolicy; reject missing timezones,
+     * invalid calendar dates and over-precise fractions instead of normalizing
+     * them or falling back to the machine's local timezone.
+     */
+    public const PARSE_DATETIME_STRICT = 131072;
+
+    /**
+     * Dump \DateTimeInterface instances with the same DateScalarPolicy schema
+     * (explicit numeric offset, up to microsecond precision) so that parsing
+     * the output with PARSE_DATETIME_STRICT yields the very same instant.
+     */
+    public const DUMP_DATETIME_STRICT = 262144;
+
+    /**
      * Parses a YAML file into a PHP value.
      *
      * Usage:

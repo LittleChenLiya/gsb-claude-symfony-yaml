@@ -122,6 +122,10 @@ class Inline
 
                 return self::dumpNull($flags);
             case $value instanceof \DateTimeInterface:
+                if (Yaml::DUMP_DATETIME_STRICT & $flags) {
+                    return DateScalarPolicy::dump($value);
+                }
+
                 return $value->format(match (true) {
                     !$length = \strlen(rtrim($value->format('u'), '0')) => 'c',
                     $length < 4 => 'Y-m-d\TH:i:s.vP',
@@ -892,6 +896,10 @@ class Inline
                     case Parser::preg_match('/^(-|\+)?[0-9][0-9_]*(\.[0-9_]+)?$/', $scalar):
                         return (float) str_replace('_', '', $scalar);
                     case Parser::preg_match(self::getTimestampRegex(), $scalar):
+                        if (Yaml::PARSE_DATETIME_STRICT & $flags) {
+                            return DateScalarPolicy::parse($scalar, self::$parsedLineNumber + 1, self::$parsedFilename);
+                        }
+
                         try {
                             // When no timezone is provided in the parsed date, YAML spec says we must assume UTC.
                             $time = new \DateTimeImmutable($scalar, new \DateTimeZone('UTC'));
