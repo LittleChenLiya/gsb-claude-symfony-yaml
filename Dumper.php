@@ -76,9 +76,9 @@ class Dumper
                     $key = (string) $key;
                 }
 
-                if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value) && str_contains($value, "\n") && !str_contains($value, "\r")) {
-                    $output .= \sprintf('%s%s%s |%s%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', '', $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value));
-                    $output .= $this->dumpBlockScalarLines($value, $prefix);
+                if (\is_string($value) && null !== $blockScalarStyle = $this->getBlockScalarStyle($value, $flags)) {
+                    $output .= \sprintf('%s%s%s %s%s%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', '', $blockScalarStyle, $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value));
+                    $output .= $this->dumpBlockScalarLines($value, $prefix, $blockScalarStyle);
 
                     continue;
                 }
@@ -86,9 +86,9 @@ class Dumper
                 if ($value instanceof TaggedValue) {
                     $output .= \sprintf('%s%s !%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', $value->getTag());
 
-                    if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
-                        $output .= \sprintf(' |%s%s', $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
-                        $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix);
+                    if (\is_string($value->getValue()) && null !== $blockScalarStyle = $this->getBlockScalarStyle($value->getValue(), $flags)) {
+                        $output .= \sprintf(' %s%s%s', $blockScalarStyle, $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
+                        $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix, $blockScalarStyle);
 
                         continue;
                     }
@@ -127,9 +127,9 @@ class Dumper
     {
         $output = \sprintf('%s!%s', $prefix ? $prefix.' ' : '', $value->getTag());
 
-        if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
-            $output .= \sprintf(' |%s%s', $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
-            $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix);
+        if (\is_string($value->getValue()) && null !== $blockScalarStyle = $this->getBlockScalarStyle($value->getValue(), $flags)) {
+            $output .= \sprintf(' %s%s%s', $blockScalarStyle, $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
+            $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix, $blockScalarStyle);
 
             return $output;
         }
@@ -155,11 +155,58 @@ class Dumper
         return '-';
     }
 
-    private function dumpBlockScalarLines(string $value, string $prefix): string
+    /**
+     * Returns the block scalar style to use for a multi-line string, or null when
+     * the value should not be dumped as a block scalar at all.
+     *
+     * The folded style (">") is only selected when every line break of the value is
+     * preserved by the YAML folding rules, so that parsing the dumped output yields
+     * the very same string; otherwise the method explicitly falls back to the
+     * literal style ("|").
+     */
+    private function getBlockScalarStyle(string $value, int $flags): ?string
     {
+        if (!($flags & (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK | Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK)) || !str_contains($value, "\n") || str_contains($value, "\r")) {
+            return null;
+        }
+
+        if ($flags & Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK && $this->isFoldableBlockScalar($value)) {
+            return '>';
+        }
+
+        return '|';
+    }
+
+    /**
+     * A multi-line string can be dumped with the folded style without data loss when
+     * none of its line breaks would be folded into a space. A line break is kept by
+     * the folding rules when it is adjacent to an empty line or to a more-indented
+     * line, so only two consecutive "plain" lines (not empty, not more-indented)
+     * make the value unsuitable for the folded style.
+     */
+    private function isFoldableBlockScalar(string $value): bool
+    {
+        $previousLineIsPlain = false;
+
+        foreach (explode("\n", $value) as $line) {
+            $lineIsPlain = '' !== $line && ' ' !== $line[0] && "\t" !== $line[0];
+
+            if ($lineIsPlain && $previousLineIsPlain) {
+                return false;
+            }
+
+            $previousLineIsPlain = $lineIsPlain;
+        }
+
+        return true;
+    }
+
+    private function dumpBlockScalarLines(string $value, string $prefix, string $style = '|'): string
+    {
+        $rows = '>' === $style ? $this->getFoldedBlockScalarRows($value) : explode("\n", $value);
         $output = '';
 
-        foreach (explode("\n", $value) as $row) {
+        foreach ($rows as $row) {
             if ('' === $row) {
                 $output .= "\n";
             } else {
@@ -168,6 +215,67 @@ class Dumper
         }
 
         return $output;
+    }
+
+    /**
+     * Computes the content lines of a folded block scalar so that parsing them
+     * yields the original string back:
+     *
+     *  - each line break of the value must be materialized, as a folded line break
+     *    between two plain lines would become a space;
+     *  - a more-indented line keeps the line breaks around it, so it is emitted as
+     *    is and also preserves the line break that precedes it;
+     *  - every other line break is materialized by an empty line, which the folding
+     *    rules keep as a line feed.
+     *
+     * @return string[]
+     */
+    private function getFoldedBlockScalarRows(string $value): array
+    {
+        $rows = [];
+        $pendingLineBreaks = 0;
+        $contentSeen = false;
+        $previousLineIndented = false;
+
+        foreach (explode("\n", $value) as $i => $line) {
+            if ($i > 0) {
+                ++$pendingLineBreaks;
+            }
+
+            if ('' === $line) {
+                // empty lines are materialized through the pending line breaks and,
+                // like in the parser, do not reset the more-indented line state
+                continue;
+            }
+
+            $lineIsIndented = \in_array($line[0], [' ', "\t"], true);
+            // a more-indented line keeps the preceding line break, unless it is the
+            // very first content line of the block; a plain line only keeps it when
+            // the previous content line was more-indented
+            $keptLineBreaks = $lineIsIndented ? ($contentSeen ? 1 : 0) : ($previousLineIndented ? 1 : 0);
+
+            while ($pendingLineBreaks > $keptLineBreaks) {
+                $rows[] = '';
+                --$pendingLineBreaks;
+            }
+
+            $pendingLineBreaks = 0;
+            $rows[] = $line;
+            $contentSeen = true;
+            $previousLineIndented = $lineIsIndented;
+        }
+
+        while ($pendingLineBreaks-- > 0) {
+            $rows[] = '';
+        }
+
+        if (!$contentSeen) {
+            // a block holding only empty lines needs one extra empty line, as the
+            // first one is consumed while the indentation of the block is detected
+            $rows[] = '';
+        }
+
+        return $rows;
     }
 
     private function getBlockIndentationIndicator(string $value): string

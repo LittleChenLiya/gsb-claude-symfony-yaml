@@ -893,6 +893,113 @@ class DumperTest extends TestCase
         $this->assertSame($data, $this->parser->parse($yml));
     }
 
+    public function testDumpMultiLineStringAsFoldedBlock()
+    {
+        // a line break between two plain lines would be folded to a space, so the dumper falls back to the literal style
+        $data = ['k' => "foo\nbar\nbaz\n"];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+        $this->assertSame("k: |\n    foo\n    bar\n    baz\n", $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+
+        // empty lines are kept as line feeds by the folding rules
+        $data = ['k' => "foo\n\nbar\n\n\nbaz\n"];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+        $this->assertSame("k: >\n    foo\n\n\n    bar\n\n\n\n    baz\n", $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+
+        // more-indented lines keep the line breaks around them
+        $data = ['k' => "foo\n  indented line\n  more indent\nbar\n"];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+        $this->assertSame("k: >\n    foo\n      indented line\n      more indent\n    bar\n", $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+    }
+
+    #[DataProvider('provideFoldableMultiLineStrings')]
+    public function testDumpMultiLineFoldedBlockRoundTrip(string $value)
+    {
+        $data = ['k' => $value];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertStringContainsString(' >', $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+    }
+
+    public static function provideFoldableMultiLineStrings(): iterable
+    {
+        yield 'strip chomping' => ["foo\n\nbar"];
+        yield 'clip chomping' => ["foo\n\nbar\n"];
+        yield 'keep chomping' => ["foo\n\nbar\n\n"];
+        yield 'keep several trailing line breaks' => ["foo\n\nbar\n\n\n"];
+        yield 'single line break' => ["\n"];
+        yield 'only line breaks' => ["\n\n\n"];
+        yield 'leading empty line' => ["\nfoo\n"];
+        yield 'indented first line' => [" foo\nbar\n"];
+        yield 'indented section' => ["foo\n  indented\n  more\nbar\n"];
+        yield 'spaces-only line' => ["foo\n  \nbar\n"];
+        yield 'tab-indented line' => ["foo\n\tbar\n"];
+        yield 'empty lines around indented line' => ["foo\n\n bar\n\nbaz\n"];
+    }
+
+    #[DataProvider('provideUnfoldableMultiLineStrings')]
+    public function testDumpMultiLineFoldedBlockFallsBackToLiteral(string $value)
+    {
+        $data = ['k' => $value];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        // consecutive plain lines cannot be represented with the folded style
+        $this->assertStringContainsString(' |', $yml);
+        $this->assertStringNotContainsString(' >', $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+    }
+
+    public static function provideUnfoldableMultiLineStrings(): iterable
+    {
+        yield 'two plain lines' => ["foo\nbar"];
+        yield 'plain lines with trailing line break' => ["foo\nbar\n"];
+        yield 'plain lines around empty line' => ["foo\nbar\n\nbaz\nqux\n"];
+    }
+
+    public function testDumpMultiLineFoldedBlockChompingIndicators()
+    {
+        $flag = Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK;
+
+        $this->assertSame("k: >-\n    foo\n\n\n    bar", $this->dumper->dump(['k' => "foo\n\nbar"], 2, 0, $flag));
+        $this->assertSame("k: >\n    foo\n\n\n    bar\n", $this->dumper->dump(['k' => "foo\n\nbar\n"], 2, 0, $flag));
+        $this->assertSame("k: >+\n    foo\n\n\n    bar\n\n", $this->dumper->dump(['k' => "foo\n\nbar\n\n"], 2, 0, $flag));
+        $this->assertSame("k: >+\n\n", $this->dumper->dump(['k' => "\n"], 2, 0, $flag));
+    }
+
+    public function testDumpMultiLineFoldedBlockWithTaggedValue()
+    {
+        $data = ['k' => new TaggedValue('text', "foo\n\nbar\n")];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertSame("k: !text >\n    foo\n\n\n    bar\n", $yml);
+        $this->assertSameData($data, $this->parser->parse($yml, Yaml::PARSE_CUSTOM_TAGS));
+    }
+
+    public function testDumpMultiLineFoldedBlockInList()
+    {
+        $data = ["foo\n\nbar\n", "a\nb\n"];
+        $yml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertSame("- >\n    foo\n\n\n    bar\n- |\n    a\n    b\n", $yml);
+        $this->assertSame($data, $this->parser->parse($yml));
+    }
+
+    public function testDumpMultiLineFoldedBlockPrefersFoldedWhenCombinedWithLiteralFlag()
+    {
+        $flags = Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK | Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK;
+
+        $this->assertStringContainsString(' >', $this->dumper->dump(['k' => "foo\n\nbar\n"], 2, 0, $flags));
+        $this->assertStringContainsString(' |', $this->dumper->dump(['k' => "foo\nbar\n"], 2, 0, $flags));
+    }
+
+    public function testDumpMultiLineStringIsNotDumpedAsBlockScalarWithoutFlags()
+    {
+        $this->assertSame("k: \"foo\\n\\nbar\\n\"\n", $this->dumper->dump(['k' => "foo\n\nbar\n"], 2));
+    }
+
     public function testCarriageReturnFollowedByNewlineIsMaintainedWhenDumpingAsMultiLineLiteralBlock()
     {
         $data = ["a\r\nb\nc"];

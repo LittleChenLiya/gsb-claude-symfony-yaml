@@ -4,6 +4,7 @@ CHANGELOG
 8.2
 ---
 
+ * Add folded block scalar support for multi-line strings by using the `Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK` flag; values that cannot be represented losslessly with the folded style fall back to the literal style
  * Add support for the `!!null`, `!!bool` and `!!int` tags, and accept quoted values for them and for `!!float`
  * Throw a `ParseException` when the value of a `!!float` tag is not a valid float, instead of casting it to `0.0`
  * Add a `gitlab` output format to the `lint:yaml` command, producing a report in the GitLab Code Quality format
