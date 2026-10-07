@@ -4,6 +4,7 @@ CHANGELOG
 8.2
 ---
 
+ * Throw a `DumpException` with the offending key path when dumping an array containing a circular reference, instead of recursing indefinitely; values shared between several non-circular key paths keep being dumped as usual
  * Add support for the `!!null`, `!!bool` and `!!int` tags, and accept quoted values for them and for `!!float`
  * Throw a `ParseException` when the value of a `!!float` tag is not a valid float, instead of casting it to `0.0`
  * Add a `gitlab` output format to the `lint:yaml` command, producing a report in the GitLab Code Quality format

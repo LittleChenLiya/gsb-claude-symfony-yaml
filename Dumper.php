@@ -11,6 +11,7 @@
 
 namespace Symfony\Component\Yaml;
 
+use Symfony\Component\Yaml\Exception\DumpException;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 
 /**
@@ -22,6 +23,21 @@ use Symfony\Component\Yaml\Tag\TaggedValue;
  */
 class Dumper
 {
+    /**
+     * Ids of the array references currently being dumped along the key path,
+     * mapped to the key path at which their array was entered.
+     *
+     * @var array<string, string>
+     */
+    private array $refsBeingDumped = [];
+
+    /**
+     * The key path of the value currently being dumped.
+     *
+     * @var list<string|int>
+     */
+    private array $currentPath = [];
+
     /**
      * @param int $indentation The amount of spaces to use for indentation of nested nodes
      */
@@ -46,6 +62,9 @@ class Dumper
             throw new \InvalidArgumentException('The Yaml::DUMP_NULL_AS_EMPTY and Yaml::DUMP_NULL_AS_TILDE flags cannot be used together.');
         }
 
+        $this->refsBeingDumped = [];
+        $this->currentPath = [];
+
         return $this->doDump($input, $inline, $indent, $flags);
     }
 
@@ -60,6 +79,14 @@ class Dumper
         }
 
         if ($inline <= 0 || (!\is_array($input) && !$input instanceof TaggedValue && $dumpObjectAsInlineMap) || !$input) {
+            // Inline::dump() traverses the remaining sub-tree on its own, so
+            // guard it against circular references before delegating to it.
+            $inlineValue = $input instanceof TaggedValue ? $input->getValue() : $input;
+
+            if (\is_array($inlineValue) && $inlineValue) {
+                $this->detectCircularReference($inlineValue, $this->currentPath);
+            }
+
             $output .= $prefix.Inline::dump($input, $flags, 0 === $nestingLevel);
         } elseif ($input instanceof TaggedValue) {
             $output .= $this->dumpTaggedValue($input, $inline, $indent, $flags, $prefix, $nestingLevel);
@@ -74,6 +101,14 @@ class Dumper
 
                 if (\is_int($key) && Yaml::DUMP_NUMERIC_KEY_AS_STRING & $flags) {
                     $key = (string) $key;
+                }
+
+                $arrayRefId = null;
+
+                if (\is_array($input) && \is_array($value) && null !== $arrayRef = \ReflectionReference::fromArrayElement($input, $key)) {
+                    if (isset($this->refsBeingDumped[$arrayRefId = $arrayRef->getId()])) {
+                        throw $this->createCircularReferenceException([...$this->currentPath, $key], $this->refsBeingDumped[$arrayRefId]);
+                    }
                 }
 
                 if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value) && str_contains($value, "\n") && !str_contains($value, "\r")) {
@@ -111,12 +146,30 @@ class Dumper
 
                 $willBeInlined = $inline - 1 <= 0 || !\is_array($value) && $dumpObjectAsInlineMap || !$value;
 
-                $output .= \sprintf('%s%s%s%s',
-                    $prefix,
-                    $dumpAsMap ? Inline::dump($key, $flags).':' : '-',
-                    $willBeInlined || ($compactNestedMapping && \is_array($value) && Inline::isHash($value)) ? ' ' : "\n",
-                    $compactNestedMapping && \is_array($value) && Inline::isHash($value) ? substr($this->doDump($value, $inline - 1, $indent + 2, $flags, $nestingLevel + 1), $indent + 2) : $this->doDump($value, $inline - 1, $willBeInlined ? 0 : $indent + $this->indentation, $flags, $nestingLevel + 1)
-                ).($willBeInlined ? "\n" : '');
+                if (\is_array($value)) {
+                    $this->currentPath[] = $key;
+
+                    if (null !== $arrayRefId) {
+                        $this->refsBeingDumped[$arrayRefId] = implode(' -> ', $this->currentPath);
+                    }
+                }
+
+                try {
+                    $output .= \sprintf('%s%s%s%s',
+                        $prefix,
+                        $dumpAsMap ? Inline::dump($key, $flags).':' : '-',
+                        $willBeInlined || ($compactNestedMapping && \is_array($value) && Inline::isHash($value)) ? ' ' : "\n",
+                        $compactNestedMapping && \is_array($value) && Inline::isHash($value) ? substr($this->doDump($value, $inline - 1, $indent + 2, $flags, $nestingLevel + 1), $indent + 2) : $this->doDump($value, $inline - 1, $willBeInlined ? 0 : $indent + $this->indentation, $flags, $nestingLevel + 1)
+                    ).($willBeInlined ? "\n" : '');
+                } finally {
+                    if (\is_array($value)) {
+                        array_pop($this->currentPath);
+
+                        if (null !== $arrayRefId) {
+                            unset($this->refsBeingDumped[$arrayRefId]);
+                        }
+                    }
+                }
             }
         }
 
@@ -139,6 +192,65 @@ class Dumper
         }
 
         return $output."\n".$this->doDump($value->getValue(), $inline - 1, $indent, $flags, $nestingLevel + 1);
+    }
+
+    /**
+     * Detects circular references in an array that is about to be dumped inline.
+     *
+     * Only arrays referenced from the key path currently being dumped are
+     * tracked: values shared between several non-circular key paths are not
+     * mistaken for circular references and keep being dumped as usual. The
+     * inspected array is only read, never modified, and nothing is serialized
+     * while detecting.
+     *
+     * @param list<string|int> $path The key path at which the array is being dumped
+     *
+     * @throws DumpException When a circular reference is detected
+     */
+    private function detectCircularReference(array $input, array $path): void
+    {
+        foreach ($input as $key => $value) {
+            if ($value instanceof TaggedValue) {
+                if (\is_array($taggedValue = $value->getValue()) && $taggedValue) {
+                    $this->detectCircularReference($taggedValue, [...$path, $key]);
+                }
+
+                continue;
+            }
+
+            if (!\is_array($value) || !$value) {
+                continue;
+            }
+
+            $keyPath = [...$path, $key];
+
+            if (null === $ref = \ReflectionReference::fromArrayElement($input, $key)) {
+                // an array that is not referenced cannot be part of a circular reference
+                $this->detectCircularReference($value, $keyPath);
+
+                continue;
+            }
+
+            if (isset($this->refsBeingDumped[$refId = $ref->getId()])) {
+                throw $this->createCircularReferenceException($keyPath, $this->refsBeingDumped[$refId]);
+            }
+
+            $this->refsBeingDumped[$refId] = implode(' -> ', $keyPath);
+
+            try {
+                $this->detectCircularReference($value, $keyPath);
+            } finally {
+                unset($this->refsBeingDumped[$refId]);
+            }
+        }
+    }
+
+    /**
+     * @param list<string|int> $keyPath
+     */
+    private function createCircularReferenceException(array $keyPath, string $referencedPath): DumpException
+    {
+        return new DumpException(\sprintf('A circular reference has been detected while dumping the key path "%s": the value refers back to the array at key path "%s".', implode(' -> ', $keyPath), $referencedPath));
     }
 
     private function getBlockChompingIndicator(string $value): string

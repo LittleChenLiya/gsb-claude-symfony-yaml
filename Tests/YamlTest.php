@@ -12,6 +12,7 @@
 namespace Symfony\Component\Yaml\Tests;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Yaml\Exception\DumpException;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Parser;
 use Symfony\Component\Yaml\Yaml;
@@ -68,5 +69,23 @@ class YamlTest extends TestCase
         } finally {
             unlink($file);
         }
+    }
+
+    public function testDumpCircularArrayReferenceThrowsDumpExceptionWithKeyPath()
+    {
+        $input = ['a' => ['b' => []]];
+        $input['a']['b']['c'] = &$input['a'];
+
+        $this->expectException(DumpException::class);
+        $this->expectExceptionMessage('A circular reference has been detected while dumping the key path "a -> b -> c": the value refers back to the array at key path "a".');
+
+        Yaml::dump($input);
+    }
+
+    public function testDumpSharedNonCircularValueIsDumpedNormally()
+    {
+        $shared = ['foo' => 'bar'];
+
+        $this->assertSame("first:\n    foo: bar\nsecond:\n    foo: bar\n", Yaml::dump(['first' => $shared, 'second' => $shared]));
     }
 }

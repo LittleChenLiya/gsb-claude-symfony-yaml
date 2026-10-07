@@ -245,6 +245,92 @@ class DumperTest extends TestCase
         $this->dumper->dump(['foo' => 'bar'], 0, 0, Yaml::DUMP_NULL_AS_EMPTY | Yaml::DUMP_NULL_AS_TILDE);
     }
 
+    public function testDumpCircularReferenceThrowsExceptionWithKeyPath()
+    {
+        $input = [];
+        $input['self'] = &$input;
+
+        $this->expectException(DumpException::class);
+        $this->expectExceptionMessage('A circular reference has been detected while dumping the key path "self -> self": the value refers back to the array at key path "self".');
+
+        $this->dumper->dump($input, 2);
+    }
+
+    public function testDumpCircularReferenceThrowsExceptionWhenDumpingInline()
+    {
+        $input = [];
+        $input['self'] = &$input;
+
+        $this->expectException(DumpException::class);
+        $this->expectExceptionMessage('A circular reference has been detected while dumping the key path "self -> self"');
+
+        $this->dumper->dump($input, 0);
+    }
+
+    public function testDumpNestedCircularReferenceThrowsExceptionWithKeyPath()
+    {
+        $input = ['level1' => ['level2' => ['level3' => []]]];
+        $input['level1']['level2']['level3']['back'] = &$input['level1']['level2'];
+
+        $this->expectException(DumpException::class);
+        $this->expectExceptionMessage('A circular reference has been detected while dumping the key path "level1 -> level2 -> level3 -> back": the value refers back to the array at key path "level1 -> level2".');
+
+        $this->dumper->dump($input, 2);
+    }
+
+    public function testDumpSharedNonCircularValueIsDumpedNormally()
+    {
+        $shared = ['foo' => 'bar'];
+        $input = ['first' => $shared, 'second' => $shared];
+
+        $expected = "first:\n    foo: bar\nsecond:\n    foo: bar\n";
+
+        $this->assertSame($expected, $this->dumper->dump($input, 2));
+    }
+
+    public function testDumpSharedNonCircularReferenceIsDumpedNormally()
+    {
+        $shared = ['foo' => 'bar'];
+        $input = [];
+        $input['first'] = &$shared;
+        $input['second'] = &$shared;
+
+        $expected = "first:\n    foo: bar\nsecond:\n    foo: bar\n";
+
+        $this->assertSame($expected, $this->dumper->dump($input, 2));
+    }
+
+    public function testDumpCircularReferenceDoesNotAlterInput()
+    {
+        $input = ['level1' => ['level2' => []]];
+        $input['level1']['level2']['back'] = &$input['level1'];
+        $before = serialize($input);
+
+        try {
+            $this->dumper->dump($input, 2);
+            $this->fail('A DumpException should have been thrown.');
+        } catch (DumpException $e) {
+            $this->assertSame('A circular reference has been detected while dumping the key path "level1 -> level2 -> back": the value refers back to the array at key path "level1".', $e->getMessage());
+        }
+
+        $this->assertSame($before, serialize($input), '->dump() does not alter the dumped array when a circular reference is detected');
+    }
+
+    public function testDumpCircularReferenceDoesNotLeakIntoNextDump()
+    {
+        $input = [];
+        $input['self'] = &$input;
+
+        try {
+            $this->dumper->dump($input, 2);
+            $this->fail('A DumpException should have been thrown.');
+        } catch (DumpException) {
+            // expected
+        }
+
+        $this->assertSame("foo: bar\n", $this->dumper->dump(['foo' => 'bar'], 2));
+    }
+
     public function testDumpNullAsEmptyInExpandedMapping()
     {
         $expected = "qux:\n    foo: bar\n    baz: \n";
