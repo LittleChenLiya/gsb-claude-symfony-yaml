@@ -1051,14 +1051,131 @@ class DumperTest extends TestCase
         $this->assertSame($data, $this->parser->parse($yaml));
     }
 
+    #[DataProvider('getMultiLineFoldedBlockData')]
+    public function testDumpMultiLineFoldedBlock(string $data, string $expected)
+    {
+        $yaml = $this->dumper->dump(['k' => $data], 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertSame($expected, $yaml);
+        $this->assertSame($data, $this->parser->parse($yaml)['k']);
+    }
+
+    public static function getMultiLineFoldedBlockData(): iterable
+    {
+        yield 'plain line breaks' => [
+            "foo\nbar\nbaz",
+            "k: >-\n    foo\n\n    bar\n\n    baz",
+        ];
+
+        yield 'blank lines' => [
+            "foo\n\nbar\n\n\nbaz\n",
+            "k: >\n    foo\n\n\n    bar\n\n\n\n    baz\n",
+        ];
+
+        yield 'indented section' => [
+            "foo\n  indented\n    deeper\nbar\n",
+            "k: >\n    foo\n      indented\n        deeper\n    bar\n",
+        ];
+
+        yield 'clip chomping' => [
+            "one\ntwo\n",
+            "k: >\n    one\n\n    two\n",
+        ];
+
+        yield 'keep chomping' => [
+            "one\ntwo\n\n",
+            "k: >+\n    one\n\n    two\n\n",
+        ];
+
+        yield 'strip chomping' => [
+            "one\ntwo",
+            "k: >-\n    one\n\n    two",
+        ];
+
+        yield 'leading blank line' => [
+            "\nfoo\nbar",
+            "k: >-\n\n    foo\n\n    bar",
+        ];
+    }
+
+    #[DataProvider('getMultiLineFoldedBlockFallbackData')]
+    public function testDumpMultiLineFoldedBlockFallsBackToLiteral(string $data, string $expected)
+    {
+        $yaml = $this->dumper->dump(['k' => $data], 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertSame($expected, $yaml);
+        $this->assertSame($data, $this->parser->parse($yaml)['k']);
+    }
+
+    public static function getMultiLineFoldedBlockFallbackData(): iterable
+    {
+        yield 'trailing space' => [
+            "foo \nbar",
+            "k: |-\n    foo \n    bar",
+        ];
+
+        yield 'trailing tab' => [
+            "foo\t\nbar",
+            "k: |-\n    foo\t\n    bar",
+        ];
+    }
+
+    public function testDumpMultiLineFoldedBlockWrapsLongLines()
+    {
+        $data = ['k' => "The quick brown fox jumps over the lazy dog while the quick brown fox jumps over the lazy dog again.\n"];
+        $yaml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $expected = "k: >\n    The quick brown fox jumps over the lazy dog while the quick brown fox jumps\n    over the lazy dog again.\n";
+        $this->assertSame($expected, $yaml);
+        $this->assertSame($data, $this->parser->parse($yaml));
+    }
+
+    public function testDumpMultiLineFoldedBlockInNestedMapAndSequence()
+    {
+        $data = ['outer' => ['k' => "foo\nbar\n"]];
+        $yaml = $this->dumper->dump($data, 3, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+        $this->assertSame("outer:\n    k: >\n        foo\n\n        bar\n", $yaml);
+        $this->assertSame($data, $this->parser->parse($yaml));
+
+        $data = ["foo\nbar\n"];
+        $yaml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+        $this->assertSame("- >\n    foo\n\n    bar\n", $yaml);
+        $this->assertSame($data, $this->parser->parse($yaml));
+    }
+
+    public function testDumpingTaggedValueTopLevelMultiLineFolded()
+    {
+        $data = new TaggedValue('text', "a\nb\n");
+        $yaml = $this->dumper->dump($data, 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+
+        $this->assertSame("!text >\n    a\n\n    b\n", $yaml);
+        $this->assertSameData($data, $this->parser->parse($yaml, Yaml::PARSE_CUSTOM_TAGS));
+    }
+
+    public function testDumpMultiLineFoldedBlockKeepsInlineDumpForCarriageReturn()
+    {
+        $this->assertSame("k: \"a\\r\\nb\"\n", $this->dumper->dump(['k' => "a\r\nb"], 2, 0, Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK));
+    }
+
+    public function testDumpMultiLineLiteralAndFoldedFlagsCannotBeUsedTogether()
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK and Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK flags cannot be used together.');
+        $this->dumper->dump("a\nb", 2, 0, Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK | Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK);
+    }
+
+    public function testDumpMultiLineStringWithoutBlockFlagsKeepsDefaultDump()
+    {
+        $this->assertSame("k: \"a\\nb\\n\"\n", $this->dumper->dump(['k' => "a\nb\n"], 2, 0));
+        $this->assertSame('"a\nb\n"', $this->dumper->dump("a\nb\n", 2, 0));
+    }
+
     public function testZeroIndentationThrowsException()
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('The indentation must be greater than zero');
         new Dumper(0);
-    }
-
-    public function testNegativeIndentationThrowsException()
+    }    public function testNegativeIndentationThrowsException()
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('The indentation must be greater than zero');

@@ -46,6 +46,10 @@ class Dumper
             throw new \InvalidArgumentException('The Yaml::DUMP_NULL_AS_EMPTY and Yaml::DUMP_NULL_AS_TILDE flags cannot be used together.');
         }
 
+        if ($flags & Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK && $flags & Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK) {
+            throw new \InvalidArgumentException('The Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK and Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK flags cannot be used together.');
+        }
+
         return $this->doDump($input, $inline, $indent, $flags);
     }
 
@@ -76,9 +80,8 @@ class Dumper
                     $key = (string) $key;
                 }
 
-                if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value) && str_contains($value, "\n") && !str_contains($value, "\r")) {
-                    $output .= \sprintf('%s%s%s |%s%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', '', $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value));
-                    $output .= $this->dumpBlockScalarLines($value, $prefix);
+                if ((Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK | Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK) & $flags && \is_string($value) && str_contains($value, "\n") && !str_contains($value, "\r")) {
+                    $output .= \sprintf('%s%s %s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', $this->dumpBlockScalar($value, $flags, $prefix));
 
                     continue;
                 }
@@ -86,9 +89,8 @@ class Dumper
                 if ($value instanceof TaggedValue) {
                     $output .= \sprintf('%s%s !%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', $value->getTag());
 
-                    if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
-                        $output .= \sprintf(' |%s%s', $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
-                        $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix);
+                    if ((Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK | Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK) & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
+                        $output .= ' '.$this->dumpBlockScalar($value->getValue(), $flags, $prefix);
 
                         continue;
                     }
@@ -127,9 +129,8 @@ class Dumper
     {
         $output = \sprintf('%s!%s', $prefix ? $prefix.' ' : '', $value->getTag());
 
-        if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
-            $output .= \sprintf(' |%s%s', $this->getBlockIndentationIndicator($value->getValue()), $this->getBlockChompingIndicator($value->getValue()));
-            $output .= $this->dumpBlockScalarLines($value->getValue(), $prefix);
+        if ((Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK | Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK) & $flags && \is_string($value->getValue()) && str_contains($value->getValue(), "\n") && !str_contains($value->getValue(), "\r")) {
+            $output .= ' '.$this->dumpBlockScalar($value->getValue(), $flags, $prefix);
 
             return $output;
         }
@@ -153,6 +154,123 @@ class Dumper
         }
 
         return '-';
+    }
+
+    /**
+     * Dumps a multi-line string as a block scalar, using the folded style when
+     * requested and losslessly representable, and falling back to the literal
+     * style otherwise.
+     */
+    private function dumpBlockScalar(string $value, int $flags, string $prefix): string
+    {
+        if (Yaml::DUMP_MULTI_LINE_FOLDED_BLOCK & $flags && $this->isFoldableBlockScalar($value)) {
+            return \sprintf('>%s%s', $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value))
+                .$this->dumpFoldedBlockScalarLines($value, $prefix);
+        }
+
+        return \sprintf('|%s%s', $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value))
+            .$this->dumpBlockScalarLines($value, $prefix);
+    }
+
+    /**
+     * Tells whether a folded block scalar can losslessly represent the value.
+     */
+    private function isFoldableBlockScalar(string $value): bool
+    {
+        // trailing whitespace on a line cannot be preserved safely when lines get folded
+        return !preg_match('/[ \t](?:\n|$)/', $value);
+    }
+
+    /**
+     * Dumps the content lines of a folded block scalar.
+     *
+     * The parser joins consecutive regular lines with a single space and keeps
+     * line breaks only around blank and more-indented lines, so an extra blank
+     * line is emitted wherever the original line break would be folded away.
+     */
+    private function dumpFoldedBlockScalarLines(string $value, string $prefix): string
+    {
+        $blockLines = [];
+        $previousType = null;
+        $lastContentType = null;
+
+        foreach (explode("\n", $value) as $line) {
+            if ('' === $line) {
+                $blockLines[] = '';
+                $previousType = 'blank';
+
+                continue;
+            }
+
+            if (str_starts_with($line, ' ') || str_starts_with($line, "\t")) {
+                // more-indented lines are kept verbatim by the folding algorithm
+                $blockLines[] = $line;
+                $previousType = 'indented';
+                $lastContentType = 'indented';
+            } else {
+                // a line break after a regular line is folded into a space unless a blank
+                // line keeps it; line breaks around more-indented or leading blank lines
+                // are already preserved by the folding algorithm
+                if ('regular' === $previousType || ('blank' === $previousType && 'regular' === $lastContentType)) {
+                    $blockLines[] = '';
+                }
+
+                foreach ($this->foldLine($line, $prefix) as $segment) {
+                    $blockLines[] = $segment;
+                }
+                $previousType = 'regular';
+                $lastContentType = 'regular';
+            }
+        }
+
+        $output = '';
+
+        foreach ($blockLines as $row) {
+            if ('' === $row) {
+                $output .= "\n";
+            } else {
+                $output .= \sprintf("\n%s%s%s", $prefix, str_repeat(' ', $this->indentation), $row);
+            }
+        }
+
+        return $output;
+    }
+
+    /**
+     * Wraps a line at word boundaries so that the folded style joins the
+     * segments back into the original line.
+     *
+     * @return string[]
+     */
+    private function foldLine(string $line, string $prefix): array
+    {
+        $width = max(20, 80 - \strlen($prefix) - $this->indentation);
+        $segments = [];
+        $rest = $line;
+
+        while (\strlen($rest) > $width) {
+            $breakAt = null;
+
+            // break at the last single space within the width, so that no segment starts or ends with a space
+            for ($i = min($width, \strlen($rest) - 1); $i > 0; --$i) {
+                if (' ' === $rest[$i] && ' ' !== $rest[$i - 1] && isset($rest[$i + 1]) && ' ' !== $rest[$i + 1]) {
+                    $breakAt = $i;
+
+                    break;
+                }
+            }
+
+            if (null === $breakAt) {
+                break;
+            }
+
+            $segments[] = substr($rest, 0, $breakAt);
+            $rest = substr($rest, $breakAt + 1);
+        }
+
+        $segments[] = $rest;
+
+        return $segments;
     }
 
     private function dumpBlockScalarLines(string $value, string $prefix): string
