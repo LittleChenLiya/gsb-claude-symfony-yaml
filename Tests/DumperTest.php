@@ -245,6 +245,58 @@ class DumperTest extends TestCase
         $this->dumper->dump(['foo' => 'bar'], 0, 0, Yaml::DUMP_NULL_AS_EMPTY | Yaml::DUMP_NULL_AS_TILDE);
     }
 
+    public function testDumpCircularArrayReferenceThrowsWithKeyPath()
+    {
+        $input = [];
+        $input['self'] = &$input;
+
+        foreach ([0, 1, 2] as $inline) {
+            try {
+                $this->dumper->dump($input, $inline);
+                $this->fail('Expected a '.DumpException::class.' to be thrown.');
+            } catch (DumpException $e) {
+                $this->assertSame('Circular reference [self, self] detected while dumping key "self".', $e->getMessage());
+            }
+        }
+
+        // The detection must not alter the original array.
+        $this->assertCount(1, $input);
+        $this->assertNotNull(\ReflectionReference::fromArrayElement($input, 'self'));
+    }
+
+    public function testDumpSharedArrayValueDumpsEachKeyAsUsual()
+    {
+        $shared = ['a' => 1, 'b' => 2];
+        $input = [];
+        $input['first'] = &$shared;
+        $input['second'] = &$shared;
+
+        $expected = "first:\n    a: 1\n    b: 2\nsecond:\n    a: 1\n    b: 2\n";
+
+        // Sharing the same non-circular value between two keys is not a cycle:
+        // it is dumped for each key, exactly like a plain copy would be.
+        $this->assertSame($expected, $this->dumper->dump(['first' => $shared, 'second' => $shared], 2));
+        $this->assertSame($expected, $this->dumper->dump($input, 2));
+        $this->assertSame($expected, Yaml::dump($input));
+    }
+
+    public function testDumpNestedCircularArrayReferenceThrowsWithKeyPath()
+    {
+        $input = ['name' => 'root'];
+        $input['child']['loop'] = &$input;
+
+        for ($i = 0; $i < 2; ++$i) {
+            try {
+                $this->dumper->dump($input, 3);
+                $this->fail('Expected a '.DumpException::class.' to be thrown.');
+            } catch (DumpException $e) {
+                // The key path pinpoints where the dump loops back to its ancestor,
+                // and repeated runs behave identically (no stale detection state).
+                $this->assertSame('Circular reference [loop, child, loop] detected while dumping key "loop".', $e->getMessage());
+            }
+        }
+    }
+
     public function testDumpNullAsEmptyInExpandedMapping()
     {
         $expected = "qux:\n    foo: bar\n    baz: \n";

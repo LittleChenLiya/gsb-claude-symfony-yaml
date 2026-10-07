@@ -33,6 +33,7 @@ class Inline
     private static bool $objectSupport = false;
     private static bool $objectForMap = false;
     private static bool $constantSupport = false;
+    private static array $refsBeingDumped = [];
 
     public static function initialize(int $flags, ?int $parsedLineNumber = null, ?string $parsedFilename = null): void
     {
@@ -239,8 +240,14 @@ class Inline
         // array
         if (($value || Yaml::DUMP_EMPTY_ARRAY_AS_SEQUENCE & $flags) && !self::isHash($value)) {
             $output = [];
-            foreach ($value as $val) {
-                $output[] = self::dump($val, $flags);
+            foreach ($value as $key => $val) {
+                self::enterArrayElement($value, $key);
+
+                try {
+                    $output[] = self::dump($val, $flags);
+                } finally {
+                    array_pop(self::$refsBeingDumped);
+                }
             }
 
             return \sprintf('[%s]', implode(', ', $output));
@@ -260,11 +267,23 @@ class Inline
         $output = [];
         $keyFlags = $flags & ~Yaml::DUMP_FORCE_DOUBLE_QUOTES_ON_VALUES;
         foreach ($value as $key => $val) {
+            $trackReferences = \is_array($value);
+
+            if ($trackReferences) {
+                self::enterArrayElement($value, $key);
+            }
+
             if (\is_int($key) && Yaml::DUMP_NUMERIC_KEY_AS_STRING & $flags) {
                 $key = (string) $key;
             }
 
-            $output[] = \sprintf('%s: %s', self::dump($key, $keyFlags), self::dump($val, $flags));
+            try {
+                $output[] = \sprintf('%s: %s', self::dump($key, $keyFlags), self::dump($val, $flags));
+            } finally {
+                if ($trackReferences) {
+                    array_pop(self::$refsBeingDumped);
+                }
+            }
         }
 
         if (!$output) {
@@ -272,6 +291,34 @@ class Inline
         }
 
         return \sprintf('{ %s }', implode(', ', $output));
+    }
+
+    /**
+     * Tracks the identity of the array element being dumped to detect circular references.
+     *
+     * Only a reference that is already on the key path of its ancestors forms a cycle;
+     * sharing the same value between sibling keys is dumped as usual. The array itself
+     * is never modified nor serialized.
+     *
+     * @throws DumpException When a circular reference is detected
+     */
+    private static function enterArrayElement(array $array, int|string $key): void
+    {
+        $refId = null;
+
+        if (\is_array($array[$key]) && null !== ($reference = \ReflectionReference::fromArrayElement($array, $key))) {
+            $refId = $reference->getId();
+
+            foreach (self::$refsBeingDumped as $depth => $ancestor) {
+                if ($ancestor['ref'] === $refId) {
+                    $cycle = array_merge(array_column(array_slice(self::$refsBeingDumped, $depth), 'key'), [$key]);
+
+                    throw new DumpException(\sprintf('Circular reference [%s] detected while dumping key "%s".', implode(', ', $cycle), $key));
+                }
+            }
+        }
+
+        self::$refsBeingDumped[] = ['key' => $key, 'ref' => $refId];
     }
 
     private static function dumpNull(int $flags, bool $rootLevel = false): string

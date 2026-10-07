@@ -11,6 +11,7 @@
 
 namespace Symfony\Component\Yaml;
 
+use Symfony\Component\Yaml\Exception\DumpException;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 
 /**
@@ -49,7 +50,7 @@ class Dumper
         return $this->doDump($input, $inline, $indent, $flags);
     }
 
-    private function doDump(mixed $input, int $inline = 0, int $indent = 0, int $flags = 0, int $nestingLevel = 0): string
+    private function doDump(mixed $input, int $inline = 0, int $indent = 0, int $flags = 0, int $nestingLevel = 0, array $refsPath = []): string
     {
         $output = '';
         $prefix = $indent ? str_repeat(' ', $indent) : '';
@@ -62,7 +63,7 @@ class Dumper
         if ($inline <= 0 || (!\is_array($input) && !$input instanceof TaggedValue && $dumpObjectAsInlineMap) || !$input) {
             $output .= $prefix.Inline::dump($input, $flags, 0 === $nestingLevel);
         } elseif ($input instanceof TaggedValue) {
-            $output .= $this->dumpTaggedValue($input, $inline, $indent, $flags, $prefix, $nestingLevel);
+            $output .= $this->dumpTaggedValue($input, $inline, $indent, $flags, $prefix, $nestingLevel, $refsPath);
         } else {
             $dumpAsMap = Inline::isHash($input);
             $compactNestedMapping = Yaml::DUMP_COMPACT_NESTED_MAPPING & $flags && !$dumpAsMap;
@@ -72,9 +73,29 @@ class Dumper
                     $output .= "\n";
                 }
 
+                $refId = null;
+
+                // Detect circular references by tracking the identity of the array elements
+                // currently being dumped. Only a reference that is already on the key path of
+                // its ancestors forms a cycle; sharing the same value between sibling keys is
+                // dumped as usual. The array itself is never modified nor serialized.
+                if (\is_array($input) && \is_array($value) && null !== ($reference = \ReflectionReference::fromArrayElement($input, $key))) {
+                    $refId = $reference->getId();
+
+                    foreach ($refsPath as $depth => $ancestor) {
+                        if ($ancestor['ref'] === $refId) {
+                            $cycle = array_merge(array_column(array_slice($refsPath, $depth), 'key'), [$key]);
+
+                            throw new DumpException(\sprintf('Circular reference [%s] detected while dumping key "%s".', implode(', ', $cycle), $key));
+                        }
+                    }
+                }
+
                 if (\is_int($key) && Yaml::DUMP_NUMERIC_KEY_AS_STRING & $flags) {
                     $key = (string) $key;
                 }
+
+                $elementRefsPath = [...$refsPath, ['key' => $key, 'ref' => $refId]];
 
                 if (Yaml::DUMP_MULTI_LINE_LITERAL_BLOCK & $flags && \is_string($value) && str_contains($value, "\n") && !str_contains($value, "\r")) {
                     $output .= \sprintf('%s%s%s |%s%s', $prefix, $dumpAsMap ? Inline::dump($key, $flags).':' : '-', '', $this->getBlockIndentationIndicator($value), $this->getBlockChompingIndicator($value));
@@ -94,10 +115,10 @@ class Dumper
                     }
 
                     if ($inline - 1 <= 0 || null === $value->getValue() || \is_scalar($value->getValue())) {
-                        $output .= ' '.$this->doDump($value->getValue(), $inline - 1, 0, $flags, $nestingLevel + 1)."\n";
+                        $output .= ' '.$this->doDump($value->getValue(), $inline - 1, 0, $flags, $nestingLevel + 1, $elementRefsPath)."\n";
                     } else {
                         $output .= "\n";
-                        $output .= $this->doDump($value->getValue(), $inline - 1, $dumpAsMap ? $indent + $this->indentation : $indent + 2, $flags, $nestingLevel + 1);
+                        $output .= $this->doDump($value->getValue(), $inline - 1, $dumpAsMap ? $indent + $this->indentation : $indent + 2, $flags, $nestingLevel + 1, $elementRefsPath);
                     }
 
                     continue;
@@ -115,7 +136,7 @@ class Dumper
                     $prefix,
                     $dumpAsMap ? Inline::dump($key, $flags).':' : '-',
                     $willBeInlined || ($compactNestedMapping && \is_array($value) && Inline::isHash($value)) ? ' ' : "\n",
-                    $compactNestedMapping && \is_array($value) && Inline::isHash($value) ? substr($this->doDump($value, $inline - 1, $indent + 2, $flags, $nestingLevel + 1), $indent + 2) : $this->doDump($value, $inline - 1, $willBeInlined ? 0 : $indent + $this->indentation, $flags, $nestingLevel + 1)
+                    $compactNestedMapping && \is_array($value) && Inline::isHash($value) ? substr($this->doDump($value, $inline - 1, $indent + 2, $flags, $nestingLevel + 1, $elementRefsPath), $indent + 2) : $this->doDump($value, $inline - 1, $willBeInlined ? 0 : $indent + $this->indentation, $flags, $nestingLevel + 1, $elementRefsPath)
                 ).($willBeInlined ? "\n" : '');
             }
         }
@@ -123,7 +144,7 @@ class Dumper
         return $output;
     }
 
-    private function dumpTaggedValue(TaggedValue $value, int $inline, int $indent, int $flags, string $prefix, int $nestingLevel): string
+    private function dumpTaggedValue(TaggedValue $value, int $inline, int $indent, int $flags, string $prefix, int $nestingLevel, array $refsPath = []): string
     {
         $output = \sprintf('%s!%s', $prefix ? $prefix.' ' : '', $value->getTag());
 
@@ -135,10 +156,10 @@ class Dumper
         }
 
         if ($inline - 1 <= 0 || null === $value->getValue() || \is_scalar($value->getValue())) {
-            return $output.' '.$this->doDump($value->getValue(), $inline - 1, 0, $flags, $nestingLevel + 1)."\n";
+            return $output.' '.$this->doDump($value->getValue(), $inline - 1, 0, $flags, $nestingLevel + 1, $refsPath)."\n";
         }
 
-        return $output."\n".$this->doDump($value->getValue(), $inline - 1, $indent, $flags, $nestingLevel + 1);
+        return $output."\n".$this->doDump($value->getValue(), $inline - 1, $indent, $flags, $nestingLevel + 1, $refsPath);
     }
 
     private function getBlockChompingIndicator(string $value): string
